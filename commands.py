@@ -1,51 +1,32 @@
 from telegram import Update
 from telegram.ext import ContextTypes
+
 from enum import StrEnum, auto
+from urllib.parse import urlparse
 
 
 class CommandType(StrEnum):
     HELP = auto()
-    ADD = auto()
-    DEL = auto()
-    LIST = auto()
+    IMPORT_START = auto()
+    IMPORT_STOP = auto()
     LINK = auto()
     STAT = auto()
 
 
-class KeyManager:
-    def __init__(self):
-        # caricare dal db
-        self.keys: set[str] = set()
-
-    def add(self, key: str) -> None:
-        self.keys.add(key)
-
-    def remove(self, key: str) -> None:
-        self.keys.add(key)
-
-    def __str__(self):
-        sorted_keys = list(self.keys)
-        sorted_keys.sort()
-        formatted_list = "\n".join(sorted_keys)
-        return formatted_list
-
-
 class Commands:
     cmd_list = """
-    /help - command list
-    /add - add a research key
-    /del - remove a research key
-    /list - show keys list
-    /stat - shows stats from a date to now
+/help - command list
+/import - starts importing
+/link - generate a post-link
+/stop - brake the import phase
+/stat - shows stats from a date to now
     """
 
     last_cmd: CommandType = CommandType.HELP
-    km = KeyManager()
 
     @classmethod
-    async def hello(cls, update: Update) -> None:
-        # insert also fabrizio ID
-        if update.effective_user.id not in [44870326]:
+    async def start(cls, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if update.effective_user.id not in [44870326, 64513378]:
             await update.message.reply_text(
                 f"Sorry {update.effective_user.first_name} you're not enabled for this service.")
             return
@@ -53,31 +34,67 @@ class Commands:
             f'Hello {update.effective_user.first_name}! Please select a command:\n{cls.cmd_list}')
 
     @classmethod
-    async def add_key(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(f'{cls.km}\nWhich keyword do you want insert?')
-        cls.last_cmd = CommandType.ADD
+    async def help(cls, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await update.message.reply_text(f'{cls.cmd_list}')
+        cls.last_cmd = CommandType.HELP
 
     @classmethod
-    async def del_key(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(f'{cls.km}\nWhich keyword do you want to delete?')
-        cls.last_cmd = CommandType.DEL
+    async def import_start(cls, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await update.message.reply_text('Import process start...?')
+        cls.last_cmd = CommandType.IMPORT_START
 
     @classmethod
-    async def list_keys(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(f'{cls.km}')
-        cls.last_cmd = CommandType.LIST
+    async def import_stop(cls, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await update.message.reply_text('Import process stop...')
+        cls.last_cmd = CommandType.IMPORT_STOP
 
     @classmethod
-    async def stat(cls, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(f'From which date you want statistics? (DD/MM/YYYY)')
+    async def stat(cls, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await update.message.reply_text('From which date you want statistics? (DD-MM-YYYY)')
         cls.last_cmd = CommandType.STAT
 
     @classmethod
-    async def build_post_from_link(cls, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text("Which keyword do you want insert?")
+    async def get_post_link(cls, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await update.message.reply_text("Please, post the link you want to refactor.")
         cls.last_cmd = CommandType.LINK
 
+    @classmethod
+    async def text(cls, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # await context.bot.send_message(chat_id=update.effective_chat.id, text=update.message.text)
+        response: str = ""
+        message_text = update.message.text
+        if message_text == "" or message_text is None:
+            await update.message.reply_text("Message text empty.")
+            return
 
-def post_builder(link: str) -> str:
-    post = ""
+        match cls.last_cmd:
+            case CommandType.STAT:
+                try:
+                    from dateutil import parser
+                    dt = parser.parse(message_text)
+                    # read data from db basing on from dt to now
+                    response = f"Statistics from {dt}:\n"
+                    cls.last_cmd = CommandType.HELP
+                except (OverflowError, ValueError) as err:
+                    response = f'{err}\nWrong date string format! Retry.'
+            case CommandType.LINK:
+                try:
+                    parsed_url = urlparse(message_text)
+                    if all([parsed_url.scheme, parsed_url.netloc]):
+                        # Write message format
+                        response = post_link_builder(message_text)
+                        cls.last_cmd = CommandType.HELP
+                    else:
+                        response = "Problem while parsing URL internal components. Retry."
+                except ValueError as verr:
+                    response = f"{verr}\nWrong URL format! Retry."
+            case CommandType.HELP | CommandType.IMPORT_START | CommandType.IMPORT_STOP:
+                response = "Cannot accept text messages without a previous explicit allowed command (stat, link)"
+
+        await update.message.reply_text(response)
+
+
+def post_link_builder(link: str) -> str:
+    """Build a post from a given promo link"""
+    post = "Post"
     return post
