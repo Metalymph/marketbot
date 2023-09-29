@@ -37,7 +37,7 @@ class Service:
         self.last_cmd: CommandType = CommandType.NO_OP
 
         self.admins, api_id, api_hash, bot_token, self.phone = args
-        self.client: TelegramClient = TelegramClient('market_bot', api_id, api_hash).start()
+        self.client: TelegramClient = TelegramClient('referral_bot', api_id, api_hash).start()
 
         self.app = ApplicationBuilder().token(bot_token).build()
         self.app.add_handler(CommandHandler("start", self.start))
