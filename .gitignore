@@ -1,3 +1,4 @@
-.env
 *.db
 *.session
+stats/
+*.env
