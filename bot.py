@@ -21,7 +21,6 @@ class CommandType(StrEnum):
     CLEAN_DB = auto()
     IMPORT = auto()
     INVITE = auto()
-    INVITE_FORCED = auto()
     NO_OP = auto()
     SIGNIN = auto()
     SIGN_OUT = auto()
@@ -105,13 +104,9 @@ class Service:
 
     async def _invite(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._check_conn()
-        await update.message.reply_text('Specify source and destination group names separated by , (e.g: home,hotel)')
+        await update.message.reply_text('Specify limit number of users, destination group and '
+                                        'if force already invited users. Format: (e.g: 1200, hotelForAll, true)')
         self.last_cmd = CommandType.INVITE
-
-    async def _invite_forced(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await self._check_conn()
-        await update.message.reply_text('Specify source and destination group names separated by , (e.g: home,hotel)')
-        self.last_cmd = CommandType.INVITE_FORCED
 
     async def _list_chats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Lists client chats formatted"""
@@ -182,12 +177,8 @@ class Service:
             await update.message.reply_text(f'{message}. Please select a command:\n{self.cmd_list}')
 
     async def _stat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if (res := await self._is_client_active()) is not None:
-            await update.message.reply_text(res)
-            self.last_cmd = CommandType.NO_OP
-        else:
-            await update.message.reply_text('From which date you want statistics? (DD-MM-YYYY). \'today\' for all.')
-            self.last_cmd = CommandType.STAT
+        await update.message.reply_text('From which date you want statistics? (DD-MM-YYYY). \'today\' for all.')
+        self.last_cmd = CommandType.STAT
 
     async def _text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Text handler based on the last command"""
@@ -210,7 +201,7 @@ class Service:
                         response = "Operation cancelled. Your database integrity is save."
                         self.last_cmd = CommandType.NO_OP
                     case _:
-                        response = "Answer not accepted. Accepted: (yes/no). Please try again."
+                        response = "Answer not accepted. Accepted: (yes/no). Try again!"
             case CommandType.IMPORT:
                 await context.bot.send_message(chat_id=update.effective_chat.id,
                                                text=f'Try importing users from {message_text}...')
@@ -228,23 +219,48 @@ class Service:
                             users_count += 1
 
                     response = f'Successfully imported {users_count} users from group {message_text}.'
-            case CommandType.INVITE | CommandType.INVITE_FORCED:
+            case CommandType.INVITE:
                 try:
-                    (source, destination) = message_text.split(',')
-                except ValueError as verr:
-                    response = f'{verr}.\nRight format(2 elements): Source - Destination.'
-                else:
-                    group_name = await self._search_dialog(source)
+                    (limit_str, destination, forced) = message_text.split(', ')
+                    _ = int(limit_str)
+
+                    group_name = await self._search_dialog(destination)
                     if group_name is None:
-                        response = f'Group {source} not found in groups.'
+                        response = f'Group {destination} not found in groups. Try again!'
                     else:
+                        # forces the API to invite also already invited users
+                        is_forced = forced.lower() == "true"
+                        forced_message = "forcing" if is_forced else "not forcing"
                         await context.bot.send_message(chat_id=update.effective_chat.id,
-                                                       text=f'Try inviting users from {source} to {destination}...')
+                                                       text=f'Try inviting {limit_str} users '
+                                                            f'to {destination} ({forced_message})...')
                         # invite users
 
-                        response = f'Successfully invite {1000} users from group {message_text}.'
+                        response = f'Successfully invite {limit_str} users to {destination}.'
+                except ValueError as verr:
+                    response = f'{verr}.\nRight format(3 elements): limitNum, destination, forced. Try again!'
             case CommandType.NO_OP:
                 response = f"Cannot accept text messages for command {self.last_cmd.name}."
+            case CommandType.SIGNIN:
+                result = await self.client.sign_in(self.phone, message_text)
+                if type(result) is telethon.types.User:
+                    response = f"User signed in correctly.\n\n{self.cmd_list}"
+                    self.last_cmd = CommandType.NO_OP
+                else:
+                    response = f'\nWrong auth code format. Try again!'
+            case CommandType.SIGN_OUT:
+                mess_to_lower = message_text.lower()
+                match mess_to_lower:
+                    case "yes":
+                        response = ("Client successfully logged out. "
+                                    "To use again the APIs please use /send_code and then /signin") \
+                            if await self.client.log_out() else "INTERNAL SERVER ERROR: could not log out correctly!"
+                        self.last_cmd = CommandType.NO_OP
+                    case "no":
+                        response = "Operation cancelled. You're still authorized."
+                        self.last_cmd = CommandType.NO_OP
+                    case _:
+                        response = "Answer not accepted. Accepted: (yes/no). . Try again!"
             case CommandType.STAT:
                 dt: datetime = datetime.now()
                 try:
@@ -264,33 +280,13 @@ class Service:
                             await file.write(f"{user_info.telegram_id} | {user_info.username} | "
                                              f"{user_info.created_at} | {user_info.invited_at}\n")
 
-                    await self.client.send_file(update.message.from_user.id, path)
-                    response = f"Downloading stat file... :"
+                    await update.message.reply_document(path)
+                    response = f"Downloading stat file..."
                     self.last_cmd = CommandType.NO_OP
                 except (OverflowError, ValueError) as err:
-                    response = f'{err}\nWrong date string format or limit! Retry.'
+                    response = f'{err}\nWrong date string format or limit. Try again!'
                 except FileNotFoundError as err:
                     response = f"{err}"
-            case CommandType.SIGNIN:
-                result = await self.client.sign_in(self.phone, message_text)
-                if type(result) is telethon.types.User:
-                    response = f"User signed in correctly.\n\n{self.cmd_list}"
-                    self.last_cmd = CommandType.NO_OP
-                else:
-                    response = f'\nWrong auth code format! Retry.'
-            case CommandType.SIGN_OUT:
-                mess_to_lower = message_text.lower()
-                match mess_to_lower:
-                    case "yes":
-                        response = ("Client successfully logged out. "
-                                    "To use again the APIs please use /send_code and then /signin") \
-                            if await self.client.log_out() else "INTERNAL SERVER ERROR: could not log out correctly!"
-                        self.last_cmd = CommandType.NO_OP
-                    case "no":
-                        response = "Operation cancelled. You're still authorized."
-                        self.last_cmd = CommandType.NO_OP
-                    case _:
-                        response = "Answer not accepted. Accepted: (yes/no). Please try again."
 
         await update.message.reply_text(response)
 
