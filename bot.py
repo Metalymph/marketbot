@@ -74,8 +74,8 @@ class Service:
 
     async def _clean_cache(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
-            for file in os.listdir("/stats"):
-                os.remove(os.path.join("/stats", file))
+            for file in os.listdir("./stats"):
+                os.remove(os.path.join("./stats", file))
             await update.message.reply_text("Stats files deleted")
         except OSError as err:
             await update.message.reply_text(f"{err}")
@@ -258,9 +258,9 @@ class Service:
                     path: str = f"./stats/stat_{datetime.now()}.txt"
                     async with aiofiles.open(path, mode="w") as file:
                         await file.write(f"Statistics until {dt}:\n\n")
-                        await file.write("id | username | created_at | invited_at")
+                        await file.write("id | username | created_at | invited_at\n\n")
                         user_info: persistence.User
-                        async for user_info in UserManager.read_all_full_info(dt):
+                        for user_info in await UserManager.read_all(dt):
                             await file.write(f"{user_info.telegram_id} | {user_info.username} | "
                                              f"{user_info.created_at} | {user_info.invited_at}\n")
 

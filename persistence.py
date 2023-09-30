@@ -8,7 +8,6 @@ from collections.abc import Generator
 
 @dataclass
 class User:
-    _id: int
     telegram_id: int
     username: str
     created_at: datetime
@@ -29,7 +28,6 @@ def connect_db(db_url):
         async def wrapper(*args, **kwargs):
             async with connect(db_url) as db:
                 return await func(db, *args, **kwargs)
-
         return wrapper
 
     return decorator
@@ -53,7 +51,7 @@ class UserManager:
                      username: str) -> int:
         if await UserManager.find(telegram_id) > 0:
             return 0
-        await db.execute("insert into user(telegram_id) values (?, ?)", (telegram_id, username))
+        await db.execute("insert into user(telegram_id, username) values (?, ?)", (telegram_id, username))
         await db.commit()
         return telegram_id
 
@@ -70,36 +68,33 @@ class UserManager:
 
     @staticmethod
     @connect_db(db_url="market_bot.db")
-    async def read_all_ids(db: Connection,
-                           not_invited_only: bool = True) -> Generator[int, Any, None]:
-        """Returns a generator of all users telegram_id (to invite only or all) to use them efficiently"""
+    async def read_all(db: Connection,
+                       until_to: datetime,
+                       not_invited_only: bool = False,
+                       only_ids: bool = False
+                       ) -> Generator[User, Any, None]:
+        """Returns a generator of all users full info (to invite only or all) to use them efficiently"""
+
         db.row_factory = Row
-        query = "select telegram_id from user"
-        query += " where invited_at is not null" if not_invited_only else ""
-        for row in await db.execute_fetchall(query):
-            yield row['telegram_id']
+        param = "telegram_id" if only_ids else "*"
+        query = f'select {param} from user where user.created_at <= ?'
+        query += " where invited_at is null" if not_invited_only else ""
+
+        return \
+            (row['telegram_id'] for row in await db.execute_fetchall(query)) if only_ids else \
+            (User(row['telegram_id'], row['username'], row['created_at'], row['invited_at'])
+             for row in await db.execute_fetchall(query, [until_to.strftime("%Y/%m/%d %H:%M:%S")]))
 
     @staticmethod
     @connect_db(db_url="market_bot.db")
-    async def read_all_full_info(db: Connection,
-                                 until_to: datetime,
-                                 not_invited_only: bool = False) -> Generator[User, Any, None]:
-        """Returns a generator of all users full info (to invite only or all) to use them efficiently"""
-
-        query = f"select * from user where datetime(user.created_at) < {until_to}"
-        query += " where invited_at is null" if not_invited_only else ""
-        for row in await db.execute_fetchall(query):
-            yield User(row['_id'], row['username'], row['telegram_id'], row['created_at'], row['invited_at'])
-
-    @staticmethod
-    @connect_db(db_url="")
-    async def update(db: Connection,
-                     telegram_id: int) -> None:
-        await db.execute("update user set invited_at = current_timestamp where telegram_id = ?", (telegram_id,))
+    async def update_to_invited(db: Connection,
+                                telegram_id: int) -> None:
+        await db.execute("update user set invited_at = current_timestamp where telegram_id = ?",
+                         (telegram_id,))
         await db.commit()
 
     @staticmethod
-    @connect_db(db_url="")
+    @connect_db(db_url="market_bot.db")
     async def delete_all(db: Connection) -> None:
         await db.execute("delete from user")
         await db.commit()
