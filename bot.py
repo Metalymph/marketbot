@@ -35,11 +35,11 @@ class Service:
         
         ☢️CRITICAL/SECURITY ☢️: 
         /clean_db - reset database
+        /clean_cache - remove all stats files
         /disconnect - close the current connection
         /sign_out - logout the client 
         
         🤑UTILS 💸:
-        /clean_cache - remove all stats files
         /import - imports all users from a public group
         /invite - invites N users not invited yet from X to Y
         /inviteForced - invites N users also already invited from X to Y
@@ -73,8 +73,10 @@ class Service:
 
     async def _clean_cache(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
-            for file in os.listdir("./stats"):
-                os.remove(os.path.join("./stats", file))
+            with os.scandir("./") as scan_iter:
+                for file in scan_iter:
+                    if file.name.endswith('.txt') and file.name.startswith('.stat'):
+                        os.remove(os.path.join("./", file.name))
             await update.message.reply_text("Stats files deleted")
         except OSError as err:
             await update.message.reply_text(f"{err}")
@@ -212,7 +214,8 @@ class Service:
                     user: telethon.types.User
                     users_count: int = 0
                     async for user in self.client.iter_participants(group_name):
-                        if user.is_self:
+                        # skips itself and the admins
+                        if user.is_self or user.id in self.admins:
                             continue
                         read_id = await UserManager.create(user.id, user.username)
                         if read_id > 0:
@@ -222,7 +225,7 @@ class Service:
             case CommandType.INVITE:
                 try:
                     (limit_str, destination, forced) = message_text.split(', ')
-                    _ = int(limit_str)
+                    limit = int(limit_str)
 
                     group_name = await self._search_dialog(destination)
                     if group_name is None:
@@ -234,7 +237,14 @@ class Service:
                         await context.bot.send_message(chat_id=update.effective_chat.id,
                                                        text=f'Try inviting {limit_str} users '
                                                             f'to {destination} ({forced_message})...')
-                        # invite users
+
+                        # read the users from db and try to add them to `destination` chat
+                        user_info: persistence.User
+                        for user_info in await UserManager.read_all(
+                                not_invited_only=not is_forced,
+                                only_ids=True,
+                                limit=limit):
+                            print(user_info)
 
                         response = f'Successfully invite {limit_str} users to {destination}.'
                 except ValueError as verr:
@@ -271,18 +281,22 @@ class Service:
                             raise ValueError()
 
                     import aiofiles
-                    path: str = f"./stats/stat_{datetime.now()}.txt"
+                    path: str = f"./stat_{datetime.now()}.txt"
                     async with aiofiles.open(path, mode="w") as file:
                         await file.write(f"Statistics until {dt}:\n\n")
                         await file.write("id | username | created_at | invited_at\n\n")
                         user_info: persistence.User
-                        for user_info in await UserManager.read_all(dt):
+                        for user_info in await UserManager.read_all(until_to=dt):
                             await file.write(f"{user_info.telegram_id} | {user_info.username} | "
                                              f"{user_info.created_at} | {user_info.invited_at}\n")
 
-                    await update.message.reply_document(path)
-                    response = f"Downloading stat file..."
-                    self.last_cmd = CommandType.NO_OP
+                    message_to_bot_admin = await update.message.reply_document(path)
+                    if message_to_bot_admin is not None:
+                        os.remove(path)
+                        response = f"Download stat file complete."
+                        self.last_cmd = CommandType.NO_OP
+                    else:
+                        response = "Error while downloading the stat file. Try again!"
                 except (OverflowError, ValueError) as err:
                     response = f'{err}\nWrong date string format or limit. Try again!'
                 except FileNotFoundError as err:

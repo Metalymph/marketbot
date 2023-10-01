@@ -69,21 +69,25 @@ class UserManager:
     @staticmethod
     @connect_db(db_url="market_bot.db")
     async def read_all(db: Connection,
-                       until_to: datetime,
+                       *,
+                       until_to: datetime = datetime.now(),
                        not_invited_only: bool = False,
-                       only_ids: bool = False
+                       only_ids: bool = False,
+                       limit: int = 1000
                        ) -> Generator[User, Any, None]:
         """Returns a generator of all users full info (to invite only or all) to use them efficiently"""
 
         db.row_factory = Row
-        param = "telegram_id" if only_ids else "*"
-        query = f'select {param} from user where user.created_at <= ?'
-        query += " where invited_at is null" if not_invited_only else ""
+        where_inv_only = "where invited_at is null " if not_invited_only else ""
+        what_select = "telegram_id" if only_ids else "*"
+        query = f'select {what_select} from user where user.created_at <= ? {where_inv_only}limit ?'
 
-        return \
-            (row['telegram_id'] for row in await db.execute_fetchall(query)) if only_ids else \
-            (User(row['telegram_id'], row['username'], row['created_at'], row['invited_at'])
-             for row in await db.execute_fetchall(query, [until_to.strftime("%Y/%m/%d %H:%M:%S")]))
+        sqlite3_dt_fmt = until_to.strftime("%Y/%m/%d %H:%M:%S")
+        if only_ids:
+            return (row['telegram_id'] for row in await db.execute_fetchall(query))
+        else:
+            return (User(row['telegram_id'], row['username'], row['created_at'], row['invited_at'])
+                    for row in await db.execute_fetchall(query, [sqlite3_dt_fmt, limit]))
 
     @staticmethod
     @connect_db(db_url="market_bot.db")

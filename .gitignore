@@ -1,4 +1,3 @@
 *.db
 *.session
-stats/
 .env
