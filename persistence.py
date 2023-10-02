@@ -67,27 +67,44 @@ class UserManager:
         return 0 if row is None else row['telegram_id']
 
     @staticmethod
+    def _read_all_query_builder(not_invited_only: bool, only_ids: bool) -> str:
+        """Util. Builder for read_all* users query"""
+
+        where_inv_only = "where invited_at is null " if not_invited_only else ""
+        what_select = "telegram_id" if only_ids else "*"
+        query = f'select {what_select} from user where user.created_at <= ? {where_inv_only}limit ?'
+        return query
+
+    @staticmethod
     @connect_db(db_url="market_bot.db")
     async def read_all(db: Connection,
                        *,
                        until_to: datetime = datetime.now(),
-                       not_invited_only: bool = False,
-                       only_ids: bool = False,
+                       include_invited: bool = False,
                        limit: int = 1000
                        ) -> Generator[User, Any, None]:
-        """Returns a generator of all users full info (to invite only or all) to use them efficiently"""
+        """Returns a generator of all users full info to use them efficiently"""
 
         db.row_factory = Row
-        where_inv_only = "where invited_at is null " if not_invited_only else ""
-        what_select = "telegram_id" if only_ids else "*"
-        query = f'select {what_select} from user where user.created_at <= ? {where_inv_only}limit ?'
-
+        query = UserManager._read_all_query_builder(include_invited, only_ids=False)
         sqlite3_dt_fmt = until_to.strftime("%Y/%m/%d %H:%M:%S")
-        if only_ids:
-            return (row['telegram_id'] for row in await db.execute_fetchall(query))
-        else:
-            return (User(row['telegram_id'], row['username'], row['created_at'], row['invited_at'])
-                    for row in await db.execute_fetchall(query, [sqlite3_dt_fmt, limit]))
+        return (User(row['telegram_id'], row['username'], row['created_at'], row['invited_at'])
+                for row in await db.execute_fetchall(query, [sqlite3_dt_fmt, limit]))
+
+    @staticmethod
+    @connect_db(db_url="market_bot.db")
+    async def read_all_ids(db: Connection,
+                           *,
+                           until_to: datetime = datetime.now(),
+                           include_invited: bool = False,
+                           limit: int = 1000
+                           ) -> Generator[int, Any, None]:
+        """Returns a generator of all users IDs to use them efficiently"""
+
+        db.row_factory = Row
+        query = UserManager._read_all_query_builder(include_invited, only_ids=True)
+        sqlite3_dt_fmt = until_to.strftime("%Y/%m/%d %H:%M:%S")
+        return (row['telegram_id'] for row in await db.execute_fetchall(query, [sqlite3_dt_fmt, limit]))
 
     @staticmethod
     @connect_db(db_url="market_bot.db")

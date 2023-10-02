@@ -1,7 +1,7 @@
 import logging
 import sys
 from typing import Tuple
-from bot import Service
+from service import Service
 
 logging.basicConfig(level=logging.ERROR)
 
