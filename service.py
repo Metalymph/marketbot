@@ -47,7 +47,7 @@ class Service:
         /invite - invites N users not invited yet from X to Y
         /list_chats - shows all the chats joined and their IDs
         /send_code - send code to Telegram for login
-        /signin - login with Telegram auth code
+        /signin - login with Telegram auth code (after /send_code)
         /stat - downloads a stats file until the given date
                 """
 
@@ -212,56 +212,78 @@ class Service:
                 await context.bot.send_message(chat_id=update.effective_chat.id,
                                                text=f'Try importing users from {message_text}...')
 
-                if dialog := await self._search_dialog(message_text) is not None:
-                    user: telethon.types.User
-                    users_count: int = 0
-                    async for user in self.client.iter_participants(dialog.id):
-                        # skips itself and the admins
-                        if user.is_self or user.id in self.admins:
-                            continue
-                        read_id = await UserManager.create(user.id, user.username)
-                        if read_id > 0:
-                            users_count += 1
-                    response = f'Successfully imported {users_count} users from group {message_text}.'
-                else:
-                    response = f'Group {message_text} not found in chats. Try again!'
+                match await self._search_dialog(message_text):
+                    case Dialog() as d:
+                        user: telethon.types.User
+                        users_count: int = 0
+                        async for user in self.client.iter_participants(d.id):
+                            # skips itself and the admins
+                            if user.is_self or user.id in self.admins:
+                                continue
+                            read_id = await UserManager.create(user.id, user.username)
+                            if read_id > 0:
+                                users_count += 1
+                        response = f'Successfully imported {users_count} users from group {message_text}.'
+                    case None:
+                        response = f'Chat {message_text} not found in chats. Try again!'
 
             case CommandType.INVITE:
                 try:
                     (limit_str, destination, forced) = message_text.split(',')
                     limit = int(limit_str)
 
-                    if dialog := await self._search_dialog(message_text) is not None:
-                        if not dialog.is_channel():
-                            response = f"Chat {message_text} is not a channel. Give me a channel name."
-                            await update.message.reply_text(response)
-                            return
+                    match await self._search_dialog(destination):
+                        case Dialog() as d:
+                            # if not d.is_channel():
+                            #     response = f"Chat {message_text} is not a channel. Give me a channel name."
+                            #     await update.message.reply_text(response)
+                            #     return
 
-                        # forces the API to invite also already invited users
-                        is_forced = forced.lower() == "yes"
-                        forced_message = "forcing" if is_forced else "not forcing"
-                        await context.bot.send_message(chat_id=update.effective_chat.id,
-                                                       text=f'Try inviting {limit_str} users '
-                                                            f'to {destination} ({forced_message})...')
+                            # forces the API to invite also already invited users
+                            is_forced = forced.lower() == "yes"
+                            forced_message = "forcing" if is_forced else "not forcing"
+                            await context.bot.send_message(chat_id=update.effective_chat.id,
+                                                           text=f'Try inviting {limit_str} users '
+                                                                f'to {destination} ({forced_message})...')
 
-                        channel_peer_entity = await self.client.get_input_entity(dialog.id)
-                        channel_entity = InputChannel(channel_peer_entity.channel_id,  channel_peer_entity.access_hash)
+                            channel_peer_entity = await self.client.get_input_entity(d.id)
+                            channel_entity = InputChannel(channel_peer_entity.channel_id,
+                                                          channel_peer_entity.access_hash)
 
-                        # read the users from db and try to add them to `destination` chat
-                        user_id: int
-                        for user_id in await UserManager.read_all_ids(
-                                include_invited=not is_forced,
-                                limit=limit):
-                            try:
-                                user_peer_entity = await self.client.get_input_entity(user_id)
-                                user_entity = InputUser(user_peer_entity.user_id, user_peer_entity.access_hash)
-                                await self.client(InviteToChannelRequest(channel_entity, [user_entity]))
-                            except UserPrivacyRestrictedError as err:
-                                logging.error(f"{err}")
+                            # read the users from db and try to add them to `destination` chat
+                            refused: int = 0
+                            total_invited: int = 0
+                            for user_read in await UserManager.read_all(
+                                    include_invited=is_forced,
+                                    limit=limit):
 
-                        response = f'Successfully invite {limit_str} users to {destination}.'
-                    else:
-                        response = f'Group {destination} not found in chats. Try again!'
+                                # check if 48 hours are passed since the last invite to user_read, if not skip
+                                if invited_date := user_read.invited_at is not None:
+                                    if (datetime.now() - invited_date).days < 2:
+                                        continue
+
+                                try:
+                                    user_peer_entity = await self.client.get_input_entity(user_read.telegram_id)
+                                    user_entity = InputUser(user_peer_entity.user_id, user_peer_entity.access_hash)
+                                    await self.client(InviteToChannelRequest(channel_entity, [user_entity]))
+                                    await UserManager.update_to_invited(user_read.telegram_id)
+                                except UserPrivacyRestrictedError as err:
+                                    # is useless to keep data of a user who locks coming connections
+                                    await UserManager.delete()
+                                    logging.error(f"user_id:{user_read.telegram_id} -> {err}")
+                                    refused += 1
+                                except telethon.errors.rpcerrorlist.UserNotMutualContactError as err:
+                                    # you're locked for 24/48h after the first unilateral contact (User.invited_at)
+                                    logging.error(f"user_id:{user_read.telegram_id} -> {err}")
+                                    refused += 1
+                                else:
+                                    total_invited += 1
+
+                            real_inv = f"{limit} number of users not available, only {total_invited}n" \
+                                if total_invited < limit else ""
+                            response = f'{real_inv}Successfully invite {total_invited-refused}/{total_invited} users to {destination}.'
+                        case None:
+                            response = f'Group {destination} not found in chats. Try again!'
                 except PeerFloodError as err:
                     logging.error(f"{err}")
                     response = ("Flood error, too many attempts."

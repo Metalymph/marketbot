@@ -67,12 +67,12 @@ class UserManager:
         return 0 if row is None else row['telegram_id']
 
     @staticmethod
-    def _read_all_query_builder(not_invited_only: bool, only_ids: bool) -> str:
+    def _read_all_query_builder(include_invited: bool, only_ids: bool) -> str:
         """Util. Builder for read_all* users query"""
 
-        where_inv_only = "where invited_at is null " if not_invited_only else ""
+        where_inv_only = "and invited_at is null" if not include_invited else ""
         what_select = "telegram_id" if only_ids else "*"
-        query = f'select {what_select} from user where user.created_at <= ? {where_inv_only}limit ?'
+        query = f'select {what_select} from user where user.created_at <= ? {where_inv_only} limit ?'
         return query
 
     @staticmethod
@@ -93,25 +93,16 @@ class UserManager:
 
     @staticmethod
     @connect_db(db_url="market_bot.db")
-    async def read_all_ids(db: Connection,
-                           *,
-                           until_to: datetime = datetime.now(),
-                           include_invited: bool = False,
-                           limit: int = 1000
-                           ) -> Generator[int, Any, None]:
-        """Returns a generator of all users IDs to use them efficiently"""
-
-        db.row_factory = Row
-        query = UserManager._read_all_query_builder(include_invited, only_ids=True)
-        sqlite3_dt_fmt = until_to.strftime("%Y/%m/%d %H:%M:%S")
-        return (row['telegram_id'] for row in await db.execute_fetchall(query, [sqlite3_dt_fmt, limit]))
-
-    @staticmethod
-    @connect_db(db_url="market_bot.db")
     async def update_to_invited(db: Connection,
                                 telegram_id: int) -> None:
         await db.execute("update user set invited_at = current_timestamp where telegram_id = ?",
                          (telegram_id,))
+        await db.commit()
+
+    @staticmethod
+    @connect_db(db_url="market_bot.db")
+    async def delete(db: Connection, telegram_id: int) -> None:
+        await db.execute("delete from user where telegram_id = ?", (telegram_id,))
         await db.commit()
 
     @staticmethod
