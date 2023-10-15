@@ -20,6 +20,15 @@ from persistence import create_db, UserManager
 logging.basicConfig(level=logging.ERROR)
 
 
+class Config:
+    def __init__(self, *, admins: list[int], api_id: int, api_hash: str, bot_token: str, phone: str):
+        self.admins = admins
+        self.api_id = api_id
+        self.api_hash = api_hash
+        self.bot_token = bot_token
+        self.phone = phone
+
+
 class CommandType(StrEnum):
     CLEAN_DB = auto()
     IMPORT = auto()
@@ -28,34 +37,40 @@ class CommandType(StrEnum):
     SIGNIN = auto()
     SIGN_OUT = auto()
     STAT = auto()
+    TOKEN_INIT = auto()
 
 
 class Service:
 
-    def __init__(self, args: tuple[list[int], int, str, str, str]):
+    def __init__(self, config: Config):
         self.cmd_list = """Click a command:
+        RU: Real User
+        BU: Bot User
+        
         /help - shows command list
         
         ☢️CRITICAL/SECURITY ☢️: 
         /clean_db - reset database
-        /clean_cache - remove all stats files
-        /disconnect - close the current connection
-        /sign_out - logout the client 
+        /clean_cache - remove all stats files (autoclean default)
+        /disconnect - close the current RU connection
+        /sign_out - logout the RU client 
         
         🤑UTILS 💸:
-        /import - imports all users from a public group
-        /invite - invites N users not invited yet from X to Y
-        /list_chats - shows all the chats joined and their IDs
-        /send_code - send code to Telegram for login
-        /signin - login with Telegram auth code (after /send_code)
+        /import - imports all users from an RU group
+        /invite - invites N users into a group using BU
+        /list_chats - shows all the RU chats
+        /send_code - send code to RU for login
+        /signin - login RU with Telegram auth code (after /send_code)
         /stat - downloads a stats file until the given date
                 """
 
+        self.config = config
         self.last_cmd: CommandType = CommandType.NO_OP
+        self.scout_client: TelegramClient = (TelegramClient('real_user', config.api_id, config.api_hash)
+                                             .start(phone=lambda: config.phone))
+        self.bot_client: TelegramClient
 
-        self.admins, api_id, api_hash, bot_token, self.phone = args
-        self.client: TelegramClient = TelegramClient('referral_bot', api_id, api_hash).start()
-        self.app = ApplicationBuilder().token(bot_token).build()
+        self.app = ApplicationBuilder().token(config.bot_token).build()
         self.app.add_handler(CommandHandler("clean_cache", self._clean_cache))
         self.app.add_handler(CommandHandler("clean_db", self._clean_db))
         self.app.add_handler(CommandHandler("disconnect", self._disconnect))
@@ -73,7 +88,7 @@ class Service:
     def run(self):
         self.app.run_polling()
 
-    async def _clean_cache(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _clean_cache(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             with os.scandir("./") as scan_iter:
                 import fnmatch
@@ -85,35 +100,35 @@ class Service:
             await update.message.reply_text(f"{err}")
         self.last_cmd = CommandType.NO_OP
 
-    async def _clean_db(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _clean_db(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Are you sure you want cleanup the database? (yes/no)")
         self.last_cmd = CommandType.CLEAN_DB
 
-    async def _disconnect(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _disconnect(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         if (res := await self._check_client()) is not None:
             await update.message.reply_text(res)
             self.last_cmd = CommandType.NO_OP
         else:
-            await self.client.disconnect()
+            await self.scout_client.disconnect()
             await update.message.reply_text("Client disconnected.")
             self.last_cmd = CommandType.NO_OP
 
-    async def _help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f'{self.cmd_list}')
         self.last_cmd = CommandType.NO_OP
 
-    async def _import_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _import_users(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         await self._check_conn()
         await update.message.reply_text('From which public source group you want import? ')
         self.last_cmd = CommandType.IMPORT
 
-    async def _invite(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _invite(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         await self._check_conn()
         await update.message.reply_text('Specify limit number of users, destination group and '
                                         'if to force already invited users. Format: (e.g: 1200,hotelForAll,yes)')
         self.last_cmd = CommandType.INVITE
 
-    async def _list_chats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def _list_chats(self, update: Update, _: ContextTypes.DEFAULT_TYPE):
         """Lists client chats formatted"""
 
         if (res := await self._check_client()) is not None:
@@ -125,7 +140,7 @@ class Service:
         channels: list[str] = []
         user_chats: list[str] = []
         dialog: Dialog
-        async for dialog in self.client.iter_dialogs():
+        async for dialog in self.scout_client.iter_dialogs():
             if dialog.is_group:
                 groups.append(f"{dialog.name}: {dialog.id})")
             elif dialog.is_channel:
@@ -143,29 +158,30 @@ class Service:
         await update.message.reply_text(response)
         self.last_cmd = CommandType.NO_OP
 
-    async def _send_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if self.client.is_user_authorized():
-            await update.message.reply_text("Already authorized. Ready to use the bot APIs.")
+    async def _send_code(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        if self.scout_client.is_user_authorized():
+            await update.message.reply_text("Real user already authorized.")
         else:
-            await self.client.send_code_request(self.phone)
-            await update.message.reply_text("Auth code sent. Use /signin to login.")
+            await self.scout_client.send_code_request(self.config.phone)
+            await update.message.reply_text(f"Auth code sent on {self.config.phone}. Use /signin to login.")
         self.last_cmd = CommandType.NO_OP
 
-    async def _signin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(f'Please paste the auth code received on {self.phone}')
+    async def _signin(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        await update.message.reply_text(f'Please paste the auth code received on {self.config.phone}')
         self.last_cmd = CommandType.SIGNIN
 
-    async def _sign_out(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _sign_out(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         if (res := await self._check_client()) is not None:
             await update.message.reply_text(res)
             self.last_cmd = CommandType.NO_OP
         else:
-            await update.message.reply_text("Are you sure you want log out? (yes/no) ")
+            await update.message.reply_text("Are you sure you want log out the real user? (yes/no) ")
             self.last_cmd = CommandType.SIGN_OUT
 
-    async def _start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Bot entry point. Allowed only to admins."""
-        if update.effective_user.id not in self.admins:
+    async def _start(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        """Bot entry point callback. Allowed only to admins."""
+
+        if update.effective_user.id not in self.config.admins:
             await update.message.reply_text(
                 f"Sorry {update.effective_user.first_name} you're not enabled for this service.")
             return
@@ -173,15 +189,16 @@ class Service:
         await create_db()
 
         message: str = f'Hello {update.effective_user.first_name}!'
-        if not await self.client.is_user_authorized():
-            _ = await self.client.send_code_request(self.phone)
-            await update.message.reply_text(f'{message}. Auth code sent.\n'
+        if not await self.scout_client.is_user_authorized():
+            _ = await self.scout_client.send_code_request(self.config.phone)
+            await update.message.reply_text(f'{message}. Auth code sent to {self.config.phone}.\n'
                                             f'Call /signin command to login.')
         else:
             await self._check_conn()
-            await update.message.reply_text(f'{message}. Please select a command:\n{self.cmd_list}')
+            await update.message.reply_text(f'{message} Please write the bot user token for add users.')
+            self.last_cmd = CommandType.TOKEN_INIT
 
-    async def _stat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _stat(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text('From which date you want statistics? (DD-MM-YYYY). \'today\' for all.')
         self.last_cmd = CommandType.STAT
 
@@ -216,9 +233,9 @@ class Service:
                     case Dialog() as d:
                         user: telethon.types.User
                         users_count: int = 0
-                        async for user in self.client.iter_participants(d.id):
+                        async for user in self.scout_client.iter_participants(d.id):
                             # skips itself and the admins
-                            if user.is_self or user.id in self.admins:
+                            if user.is_self or user.id in self.config.admins:
                                 continue
                             read_id = await UserManager.create(user.id, user.username)
                             if read_id > 0:
@@ -246,7 +263,7 @@ class Service:
                                                            text=f'Try inviting {limit_str} users '
                                                                 f'to {destination} ({forced_message})...')
 
-                            channel_peer_entity = await self.client.get_input_entity(d.id)
+                            channel_peer_entity = await self.scout_client.get_input_entity(d.id)
                             channel_entity = InputChannel(channel_peer_entity.channel_id,
                                                           channel_peer_entity.access_hash)
 
@@ -263,9 +280,10 @@ class Service:
                                         continue
 
                                 try:
-                                    user_peer_entity = await self.client.get_input_entity(user_read.telegram_id)
+                                    user_peer_entity = await (self.scout_client
+                                                              .get_input_entity(user_read.telegram_id))
                                     user_entity = InputUser(user_peer_entity.user_id, user_peer_entity.access_hash)
-                                    await self.client(InviteToChannelRequest(channel_entity, [user_entity]))
+                                    await self.scout_client(InviteToChannelRequest(channel_entity, [user_entity]))
                                     await UserManager.update_to_invited(user_read.telegram_id)
                                 except UserPrivacyRestrictedError as err:
                                     # is useless to keep data of a user who locks coming connections
@@ -281,7 +299,8 @@ class Service:
 
                             real_inv = f"{limit} number of users not available, only {total_invited}n" \
                                 if total_invited < limit else ""
-                            response = f'{real_inv}Successfully invite {total_invited-refused}/{total_invited} users to {destination}.'
+                            response = (f'{real_inv}Successfully invite {total_invited-refused}/{total_invited} '
+                                        f'users to {destination}.')
                         case None:
                             response = f'Group {destination} not found in chats. Try again!'
                 except PeerFloodError as err:
@@ -294,7 +313,7 @@ class Service:
             case CommandType.NO_OP:
                 response = f"Cannot accept text messages for command {self.last_cmd.name}."
             case CommandType.SIGNIN:
-                result = await self.client.sign_in(self.phone, message_text)
+                result = await self.scout_client.sign_in(self.config.phone, message_text)
                 if type(result) is telethon.types.User:
                     response = f"User signed in correctly.\n\n{self.cmd_list}"
                     self.last_cmd = CommandType.NO_OP
@@ -307,7 +326,8 @@ class Service:
                     case "yes":
                         response = ("Client successfully logged out. "
                                     "To use again the APIs please use /send_code and then /signin") \
-                            if await self.client.log_out() else "INTERNAL SERVER ERROR: could not log out correctly!"
+                            if await self.scout_client.log_out() \
+                            else "INTERNAL SERVER ERROR: could not log out correctly!"
                         self.last_cmd = CommandType.NO_OP
                     case "no":
                         response = "Operation cancelled. You're still authorized."
@@ -346,14 +366,25 @@ class Service:
                 except FileNotFoundError as err:
                     response = f"{err}"
 
+            case CommandType.TOKEN_INIT:
+                try:
+                    self.bot_client = (TelegramClient('bot_user', self.config.api_id, self.config.api_hash)
+                                       .start(bot_token=message_text))
+                except ValueError as error:
+                    logging.error(error)
+                    response = f"{error}. Try again!"
+                else:
+                    response = "Bot user connected. Use /help for the commands."
+                    self.last_cmd = CommandType.NO_OP
+
         await update.message.reply_text(response)
 
     async def _check_conn(self) -> str | None:
         """Returns `str` if the connection fails, else `None`"""
 
-        if not self.client.is_connected():
+        if not self.scout_client.is_connected():
             try:
-                await self.client.connect()
+                await self.scout_client.connect()
             except OSError as os_error:
                 return f"Failed to connect to telegram client {os_error}"
         return None
@@ -361,7 +392,7 @@ class Service:
     async def _check_client(self) -> str | None:
         """Returns `str` if the user is not authorized or the connection fails, else `None`"""
 
-        if not await self.client.is_user_authorized():
+        if not await self.scout_client.is_user_authorized():
             return "User not authorized. Please use /send_"
         if (res := await self._check_conn()) is not None:
             return res
@@ -371,7 +402,7 @@ class Service:
         """Returns `int` (chat_id) if the user's chats name is `message_str` """
 
         dialog: Dialog
-        async for dialog in self.client.iter_dialogs():
+        async for dialog in self.scout_client.iter_dialogs():
             if dialog.name == message_text:
                 return dialog
         return None
