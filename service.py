@@ -9,7 +9,7 @@ from telethon.tl.custom.dialog import Dialog
 from telethon.tl.functions.channels import InviteToChannelRequest
 from telethon.errors.rpcerrorlist import PeerFloodError, UserPrivacyRestrictedError
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum, auto
 import logging
 import os
@@ -43,29 +43,11 @@ class CommandType(StrEnum):
 class Service:
 
     def __init__(self, config: Config):
-        self.cmd_list = """Click a command:
-        RU: Real User
-        BU: Bot User
-        
-        /help - shows command list
-        
-        ☢️CRITICAL/SECURITY ☢️: 
-        /clean_db - reset database
-        /clean_cache - remove all stats files (autoclean default)
-        /disconnect - close the current RU connection
-        /sign_out - logout the RU client 
-        
-        🤑UTILS 💸:
-        /import - imports all users from an RU group
-        /invite - invites N users into a group using BU
-        /list_chats - shows all the RU chats
-        /send_code - send code to RU for login
-        /signin - login RU with Telegram auth code (after /send_code)
-        /stat - downloads a stats file until the given date
-                """
-
         self.config = config
         self.last_cmd: CommandType = CommandType.NO_OP
+        self.invited_users_24h: int = 0
+        self.last_invite: datetime = datetime.now()
+
         self.scout_client: TelegramClient = (TelegramClient('real_user', config.api_id, config.api_hash)
                                              .start(phone=lambda: config.phone))
         self.bot_client: TelegramClient
@@ -75,14 +57,14 @@ class Service:
         self.app.add_handler(CommandHandler("clean_db", self._clean_db))
         self.app.add_handler(CommandHandler("disconnect", self._disconnect))
         self.app.add_handler(CommandHandler("start", self._start))
-        self.app.add_handler(CommandHandler("help", self._help))
         self.app.add_handler(CommandHandler("import", self._import_users))
         self.app.add_handler(CommandHandler("invite", self._invite))
-        self.app.add_handler(CommandHandler("list_chats", self._list_chats))
+        self.app.add_handler(CommandHandler("listchats", self._list_chats))
         self.app.add_handler(CommandHandler("signin", self._signin))
-        self.app.add_handler(CommandHandler("send_code", self._send_code))
-        self.app.add_handler(CommandHandler("sign_out", self._sign_out))
+        self.app.add_handler(CommandHandler("sendcode", self._send_code))
+        self.app.add_handler(CommandHandler("signout", self._sign_out))
         self.app.add_handler(CommandHandler("stat", self._stat))
+        self.app.add_handler(CommandHandler("token", self._token))
         self.app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self._text))
 
     def run(self):
@@ -112,10 +94,6 @@ class Service:
             await self.scout_client.disconnect()
             await update.message.reply_text("Client disconnected.")
             self.last_cmd = CommandType.NO_OP
-
-    async def _help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(f'{self.cmd_list}')
-        self.last_cmd = CommandType.NO_OP
 
     async def _import_users(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         await self._check_conn()
@@ -249,6 +227,21 @@ class Service:
                     (limit_str, destination, forced) = message_text.split(',')
                     limit = int(limit_str)
 
+                    if limit > 200:
+                        await update.message.reply_text(f"{limit} is greater then max limit 200.")
+                        return
+
+                    diff = datetime.now() - self.last_invite
+                    if diff.days >= 1:
+                        self.last_invite = datetime.now()
+                        self.invited_users_24h = 0
+
+                    if self.invited_users_24h == 200:
+                        await update.message.reply_text(f"Daily limit reached. "
+                                                        f"You've to wait until to "
+                                                        f"{self.last_invite + timedelta(days=1)}")
+                        return
+
                     match await self._search_dialog(destination):
                         case Dialog() as d:
                             # if not d.is_channel():
@@ -296,11 +289,16 @@ class Service:
                                     refused += 1
                                 else:
                                     total_invited += 1
+                                    self.invited_users_24h += 1
+                                    if self.invited_users_24h == 200:
+                                        break
 
-                            real_inv = f"{limit} number of users not available, only {total_invited}n" \
+                            real_inv = f"{limit} users not available, only {total_invited}." \
                                 if total_invited < limit else ""
-                            response = (f'{real_inv}Successfully invite {total_invited-refused}/{total_invited} '
-                                        f'users to {destination}.')
+                            response = (f'{real_inv} Successfully invited {total_invited-refused}/{total_invited} '
+                                        f'users to {destination}. '
+                                        f'{"(restriction due to limit 200 users reached)" 
+                                            if self.invited_users_24h == 200 else ""}')
                         case None:
                             response = f'Group {destination} not found in chats. Try again!'
                 except PeerFloodError as err:
@@ -315,7 +313,7 @@ class Service:
             case CommandType.SIGNIN:
                 result = await self.scout_client.sign_in(self.config.phone, message_text)
                 if type(result) is telethon.types.User:
-                    response = f"User signed in correctly.\n\n{self.cmd_list}"
+                    response = f"User signed in correctly."
                     self.last_cmd = CommandType.NO_OP
                 else:
                     response = f'\nWrong auth code format. Try again!'
@@ -370,14 +368,17 @@ class Service:
                 try:
                     self.bot_client = (TelegramClient('bot_user', self.config.api_id, self.config.api_hash)
                                        .start(bot_token=message_text))
+                    response = "Bot user connected."
+                    self.last_cmd = CommandType.NO_OP
                 except ValueError as error:
                     logging.error(error)
                     response = f"{error}. Try again!"
-                else:
-                    response = "Bot user connected. Use /help for the commands."
-                    self.last_cmd = CommandType.NO_OP
 
         await update.message.reply_text(response)
+
+    async def _token(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        await update.message.reply_text("Please, write the bot token")
+        self.last_cmd = CommandType.TOKEN_INIT
 
     async def _check_conn(self) -> str | None:
         """Returns `str` if the connection fails, else `None`"""

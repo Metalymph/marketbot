@@ -14,9 +14,9 @@ def load_env() -> Config:
     load_dotenv()
 
     admins_str: str = os.getenv('ADMINS')
-    bot_token = os.getenv('BOT_TOKEN')
-    api_id = os.getenv('TELEGRAM_API_ID')
-    api_hash = os.getenv('TELEGRAM_API_HASH')
+    bot_token = os.getenv('SERVER_BOT_TOKEN')
+    api_id = os.getenv('API_ID')
+    api_hash = os.getenv('API_HASH')
     phone = os.getenv('PHONE')
 
     critical_message: str = ""
@@ -27,7 +27,7 @@ def load_env() -> Config:
     if api_hash is None:
         critical_message = "API_HASH env variable is none"
     if bot_token is None:
-        critical_message = "BOT_TOKEN env variable is none"
+        critical_message = "SERVER_BOT_TOKEN env variable is none"
     if phone is None:
         critical_message = "PHONE env variable is none."
 
