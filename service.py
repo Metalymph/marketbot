@@ -34,6 +34,7 @@ class CommandType(StrEnum):
     IMPORT = auto()
     INVITE = auto()
     NO_OP = auto()
+    POST = auto()
     SIGNIN = auto()
     SIGN_OUT = auto()
     STAT = auto()
@@ -50,7 +51,7 @@ class Service:
 
         self.scout_client: TelegramClient = (TelegramClient('real_user', config.api_id, config.api_hash)
                                              .start(phone=lambda: config.phone))
-        self.bot_client: TelegramClient
+        self.bot_client: TelegramClient | None = None
 
         self.app = ApplicationBuilder().token(config.bot_token).build()
         self.app.add_handler(CommandHandler("clean_cache", self._clean_cache))
@@ -60,6 +61,7 @@ class Service:
         self.app.add_handler(CommandHandler("import", self._import_users))
         self.app.add_handler(CommandHandler("invite", self._invite))
         self.app.add_handler(CommandHandler("listchats", self._list_chats))
+        self.app.add_handler(CommandHandler("new_post", self._new_post))
         self.app.add_handler(CommandHandler("signin", self._signin))
         self.app.add_handler(CommandHandler("sendcode", self._send_code))
         self.app.add_handler(CommandHandler("signout", self._sign_out))
@@ -103,7 +105,7 @@ class Service:
     async def _invite(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         await self._check_conn()
         await update.message.reply_text('Specify limit number of users, destination group and '
-                                        'if to force already invited users. Format: (e.g: 1200,hotelForAll,yes)')
+                                        'if to force already invited users. Format: (e.g: 200,hotelForAll,yes)')
         self.last_cmd = CommandType.INVITE
 
     async def _list_chats(self, update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -135,6 +137,13 @@ class Service:
                     f'Private chats:\n{user_chats_fmt}')
         await update.message.reply_text(response)
         self.last_cmd = CommandType.NO_OP
+
+    async def _new_post(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        if self.bot_client.is_user_authorized() and self.bot_client.is_connected():
+            await update.message.reply_text("Write your post here.")
+            self.last_cmd = CommandType.POST
+        else:
+            await update.message.reply_text("Please use /token to login your userbot.")
 
     async def _send_code(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         if self.scout_client.is_user_authorized():
@@ -231,6 +240,7 @@ class Service:
                         await update.message.reply_text(f"{limit} is greater then max limit 200.")
                         return
 
+                    # verifies the violation of  200+ invited in 24h
                     diff = datetime.now() - self.last_invite
                     if diff.days >= 1:
                         self.last_invite = datetime.now()
@@ -244,11 +254,6 @@ class Service:
 
                     match await self._search_dialog(destination):
                         case Dialog() as d:
-                            # if not d.is_channel():
-                            #     response = f"Chat {message_text} is not a channel. Give me a channel name."
-                            #     await update.message.reply_text(response)
-                            #     return
-
                             # forces the API to invite also already invited users
                             is_forced = forced.lower() == "yes"
                             forced_message = "forcing" if is_forced else "not forcing"
@@ -263,19 +268,23 @@ class Service:
                             # read the users from db and try to add them to `destination` chat
                             refused: int = 0
                             total_invited: int = 0
+                            user_read: persistence.User
                             for user_read in await UserManager.read_all(
                                     include_invited=is_forced,
                                     limit=limit):
 
                                 # check if 48 hours are passed since the last invite to user_read, if not skip
-                                if invited_date := user_read.invited_at is not None:
-                                    if (datetime.now() - invited_date).days < 2:
+                                if (invited_datetime := user_read.invited_at) is not None:
+                                    if (datetime.now() - invited_datetime).days < 2:
                                         continue
 
                                 try:
                                     user_peer_entity = await (self.scout_client
                                                               .get_input_entity(user_read.telegram_id))
                                     user_entity = InputUser(user_peer_entity.user_id, user_peer_entity.access_hash)
+
+                                    # if self.bot_client is None:
+                                    #     raise ValueError("Bot client not initialized")
                                     await self.scout_client(InviteToChannelRequest(channel_entity, [user_entity]))
                                     await UserManager.update_to_invited(user_read.telegram_id)
                                 except UserPrivacyRestrictedError as err:
@@ -287,6 +296,9 @@ class Service:
                                     # you're locked for 24/48h after the first unilateral contact (User.invited_at)
                                     logging.error(f"user_id:{user_read.telegram_id} -> {err}")
                                     refused += 1
+                                except ValueError as verr:
+                                    await update.message.reply_text(f"{verr}")
+                                    return
                                 else:
                                     total_invited += 1
                                     self.invited_users_24h += 1
@@ -310,6 +322,10 @@ class Service:
 
             case CommandType.NO_OP:
                 response = f"Cannot accept text messages for command {self.last_cmd.name}."
+
+            case CommandType.POST:
+                pass
+
             case CommandType.SIGNIN:
                 result = await self.scout_client.sign_in(self.config.phone, message_text)
                 if type(result) is telethon.types.User:
