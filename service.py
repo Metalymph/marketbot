@@ -49,8 +49,8 @@ class Service:
         self.invited_users_24h: int = 0
         self.last_invite: datetime = datetime.now()
 
-        self.scout_client: TelegramClient = (TelegramClient('real_user', config.api_id, config.api_hash)
-                                             .start(phone=lambda: config.phone))
+        self.scout_client: TelegramClient = TelegramClient('real_user', config.api_id, config.api_hash)
+        # DEBUG MODE: .start(phone=lambda: config.phone))
         self.bot_client: TelegramClient | None = None
 
         self.app = ApplicationBuilder().token(config.bot_token).build()
@@ -307,10 +307,12 @@ class Service:
 
                             real_inv = f"{limit} users not available, only {total_invited}." \
                                 if total_invited < limit else ""
-                            response = (f'{real_inv} Successfully invited {total_invited-refused}/{total_invited} '
-                                        f'users to {destination}. '
-                                        f'{"(restriction due to limit 200 users reached)" 
-                                            if self.invited_users_24h == 200 else ""}')
+                            if self.invited_users_24h == 200:
+                                response = ""
+                            else:
+                                response = (f'{real_inv} Successfully invited '
+                                            f'{total_invited - refused}/{total_invited} '
+                                            f'users to {destination}. (restriction due to limit 200 users reached)')
                         case None:
                             response = f'Group {destination} not found in chats. Try again!'
                 except PeerFloodError as err:

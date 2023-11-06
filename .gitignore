@@ -1,3 +1,5 @@
 *.db
 *.session
-.env
+*.env
+*.idea
+*.json

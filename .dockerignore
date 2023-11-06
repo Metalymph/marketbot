@@ -14,6 +14,7 @@
 **/.settings
 **/.vs
 **/.vscode
+**/.idea
 **/*.*proj.user
 **/*.session
 **/bin

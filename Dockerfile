@@ -4,7 +4,6 @@ ARG PYTHON_VERSION=3.12.0
 ARG ALPINE_VERSION=3.18
 FROM python:${PYTHON_VERSION}-alpine${ALPINE_VERSION} as base
 
-# Prevents Python from writing pyc files.
 ENV PYTHONDONTWRITEBYTECODE=1
 
 # Keeps Python from buffering stdout and stderr to avoid situations where
@@ -36,8 +35,5 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Switch to the non-privileged user to run the application.
 #USER appuser
 
-# Copy the source code into the container.
 COPY . .
-
-# Run the application.
 CMD python /app/main.py
