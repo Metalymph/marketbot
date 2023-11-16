@@ -3,4 +3,4 @@ aiosqlite==0.19.0
 python-dateutil==2.8.2
 python-dotenv==1.0.0
 python-telegram-bot==20.6
-Telethon==1.32.0
+Telethon==1.32.1
